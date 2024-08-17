@@ -54,40 +54,43 @@ class ResidualInResidualDenseBlock(nn.Module):
 
     def forward(self, x):
         return self.dense_blocks(x).mul(self.res_scale) + x
-    
+
+import torch.nn.functional as F
+
+class CustomUpsampleLayer(nn.Module):
+    def __init__(self, scale_factor):
+        super(CustomUpsampleLayer, self).__init__()
+        self.scale_factor = scale_factor
+
+    def forward(self, x):
+        # Bilinear interpolation with custom scale factor
+        return F.interpolate(x, scale_factor=self.scale_factor, mode='bilinear', align_corners=False)
 
 class GeneratorRRDB(nn.Module):
-    def __init__(self, channels, filters=64, num_res_blocks=16, num_upsample=2):
+    def __init__(self, channels, filters=64, num_res_blocks=16):
         super(GeneratorRRDB, self).__init__()
 
-        # First Layer  
+        # 첫 번째 Conv 레이어
         self.conv1 = nn.Conv2d(channels, filters, kernel_size=3, stride=1, padding=1)
-        # Residual block  
+
+        # Residual blocks
         self.res_blocks = nn.Sequential(*[ResidualInResidualDenseBlock(filters) for _ in range(num_res_blocks)])
-        # second conv layer post residual blocks
+
+        # 두 번째 Conv 레이어
         self.conv2 = nn.Conv2d(filters, filters, kernel_size=3, stride=1, padding=1)
-        # Upsampling layers  
-        upsample_layers = []
-        for _ in range(num_upsample):
-            upsample_layers += [
-                nn.Conv2d(filters, filters * 4, kernel_size=3, stride=1, padding=1), 
-                nn.LeakyReLU(), 
-                nn.PixelShuffle(upscale_factor=2), 
-            ]
-        self.upsampling = nn.Sequential(*upsample_layers)
-        # Final output block  
-        self.conv3 = nn.Sequential(
-            nn.Conv2d(filters, filters, kernel_size=3, stride=1, padding=1), 
-            nn.LeakyReLU(), 
-            nn.Conv2d(filters, channels, kernel_size=3, stride=1, padding=1), 
-        )
+
+        # 5배 업샘플링 레이어
+        self.upsample = CustomUpsampleLayer(scale_factor=5)
+
+        # 최종 출력 레이어
+        self.conv3 = nn.Conv2d(filters, channels, kernel_size=3, stride=1, padding=1)
 
     def forward(self, x):
         out1 = self.conv1(x)
         out = self.res_blocks(out1)
         out2 = self.conv2(out)
         out = torch.add(out1, out2)
-        out = self.upsampling(out)
+        out = self.upsample(out)  # 5배 업샘플링
         out = self.conv3(out)
         return out
 
@@ -98,7 +101,9 @@ class Discriminator(nn.Module):
 
         self.input_shape = input_shape
         in_channels, in_height, in_width = self.input_shape
-        patch_h, patch_w = int(in_height / 2 ** 4), int(in_width/ 2 ** 4)
+        patch_h, patch_w = (in_height - 1) // 2**4 + 1, (in_width - 1) // 2**4 + 1
+
+        # 패치 크기를 적절히 계산하여 7x7로 맞춤
         self.output_shape = (1, patch_h, patch_w)
 
         def discriminator_block(in_filters, out_filters, first_block=False):
@@ -124,3 +129,4 @@ class Discriminator(nn.Module):
 
     def forward(self, img):
         return self.model(img)
+
