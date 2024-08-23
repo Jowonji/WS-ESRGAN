@@ -1,9 +1,9 @@
 import argparse
 import os
 import numpy as np
+from tqdm import tqdm  # tqdm 라이브러리 추가
 
 from torchvision.utils import save_image, make_grid
-
 from torch.utils.data import DataLoader
 from torch.autograd import Variable
 
@@ -14,8 +14,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-os.makedirs('images/b32_40_2000', exist_ok=True)
-os.makedirs('saved_models/b32_40_2000', exist_ok=True)
+# 디렉토리 경로 변수로 지정
+image_dir = 'images/upsamplinglayer'
+model_dir = 'saved_models/upsamplinglayer'
+lr_dir = '/home/wj/works/SR-project/WSdata/LR'
+hr_dir = '/home/wj/works/SR-project/WSdata/HR'
+
+# 디렉토리 생성
+os.makedirs(image_dir, exist_ok=True)
+os.makedirs(model_dir, exist_ok=True)
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--epoch', type=int, default=0, help='epoch to start training from')
@@ -26,7 +33,7 @@ parser.add_argument('--hr_width', type=int, default=100, help='high res. image w
 parser.add_argument('--sample_interval', type=int, default=100, help='interval between saving image samples')
 parser.add_argument('--residual_blocks', type=int, default=16, help='number of residual blocks in the generator')
 parser.add_argument('--warmup_batches', type=int, default=2000, help='number of batches with pixel-wise loss only')
-parser.add_argument('--lambda_adv', type=float, default=0.05, help='adversial loss weight')
+parser.add_argument('--lambda_adv', type=float, default=0.01, help='adversial loss weight')
 parser.add_argument('--lambda_pixel', type=float, default=1, help='pixel-wise loss weight')
 parser.add_argument('--lambda_content', type=float, default=1, help='content loss weight')
 opt = parser.parse_args()
@@ -50,17 +57,17 @@ criterion_GAN = torch.nn.BCEWithLogitsLoss().to(device)
 criterion_content = torch.nn.L1Loss().to(device)
 criterion_pixel = torch.nn.L1Loss().to(device)
 
+# 모델이 이미 존재하는 경우, 해당 모델 불러오기
 if opt.epoch != 0:
-    generator.load_state_dict(torch.load('saved_models/generator_%d.pth' % opt.epoch))
-    discriminator.load_state_dict(torch.load('saved_models/discriminator_%d.pth' % opt.epoch))
+    generator.load_state_dict(torch.load(f'{model_dir}/generator_{opt.epoch}.pth'))
+    # discriminator.load_state_dict(torch.load(f'{model_dir}/discriminator_{opt.epoch}.pth'))
 
 optimizer_G = torch.optim.Adam(generator.parameters(), lr=opt.lr)
 optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=opt.lr)
 
 Tensor = torch.cuda.FloatTensor if torch.cuda.is_available() else torch.Tensor
 
-lr_dir = '/home/wj/works/SR-project/WSdata/LR'
-hr_dir = '/home/wj/works/SR-project/WSdata/HR'
+# 데이터셋 로드
 train_dataset = TrainDatasetFromFolder(lr_dir, hr_dir)
 train_loader = DataLoader(dataset=train_dataset, num_workers=4, batch_size=32, shuffle=True)
 
@@ -69,7 +76,8 @@ train_loader = DataLoader(dataset=train_dataset, num_workers=4, batch_size=32, s
 # ----------  
 
 for epoch in range(opt.epoch, opt.n_epochs):
-    for i, (data, target) in enumerate(train_loader):
+    progress_bar = tqdm(enumerate(train_loader), total=len(train_loader), desc=f"Epoch {epoch+1}/{opt.n_epochs}")  # tqdm으로 진행률 바 생성
+    for i, (data, target) in progress_bar:
 
         batches_done = epoch * len(train_loader) + i
 
@@ -92,10 +100,7 @@ for epoch in range(opt.epoch, opt.n_epochs):
         if batches_done < opt.warmup_batches:
             loss_pixel.backward()
             optimizer_G.step()
-            print(
-                '[Epoch %d/%d] [Batch %d/%d] [G pixel: %f]' % 
-                (epoch, opt.n_epochs, i, len(train_loader), loss_pixel.item())
-            )
+            progress_bar.set_postfix({'G pixel': loss_pixel.item()})  # 진행률 바에 손실 정보 표시
             continue
 
         pred_real = discriminator(imgs_hr).detach()
@@ -120,7 +125,7 @@ for epoch in range(opt.epoch, opt.n_epochs):
         optimizer_D.zero_grad()
 
         pred_real = discriminator(imgs_hr)
-        pred_fake = discriminator(gen_hr.detach()) # 不更新生成器生成的图像  
+        pred_fake = discriminator(gen_hr.detach())
 
         loss_real = criterion_GAN(pred_real - pred_fake.mean(0, keepdim=True), valid)
         loss_fake = criterion_GAN(pred_fake - pred_real.mean(0, keepdim=True), fake)
@@ -130,29 +135,13 @@ for epoch in range(opt.epoch, opt.n_epochs):
         loss_D.backward()
         optimizer_D.step()
 
-        # -----------------  
-        # Log Progress  
-        # -----------------
-
-        print(
-            '[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f, content: %f, adv: %f, pixel: %f]' % 
-            (
-                epoch, 
-                opt.n_epochs, 
-                i, 
-                len(train_loader), 
-                loss_D.item(), 
-                loss_G.item(), 
-                loss_content.item(), 
-                loss_GAN.item(), 
-                loss_pixel.item(), 
-            )
-        )
+        # 진행률 바에 손실 정보 업데이트
+        progress_bar.set_postfix({'D loss': loss_D.item(), 'G loss': loss_G.item()})
 
         if batches_done % opt.sample_interval == 0:
             imgs_lr = nn.functional.interpolate(imgs_lr, scale_factor=5, mode='bicubic')
             img_grid = torch.clamp(torch.cat((imgs_lr, gen_hr, imgs_hr), -1), min=0, max=1)
-            save_image(img_grid, 'images/b32_40_2000/%d.png' % batches_done, nrow=1, normalize=False)
+            save_image(img_grid, f'{image_dir}/{batches_done}.png', nrow=1, normalize=False)
 
-    torch.save(generator.state_dict(), 'saved_models/b32_40_2000/generator_%d.pth' % epoch)
-    torch.save(discriminator.state_dict(), 'saved_models/b32_40_2000/discriminator_%d.pth' % epoch)
+    torch.save(generator.state_dict(), f'{model_dir}/generator_{epoch}.pth')
+    # torch.save(discriminator.state_dict(), f'{model_dir}/discriminator_{epoch}.pth')
