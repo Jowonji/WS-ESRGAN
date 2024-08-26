@@ -57,14 +57,29 @@ class ResidualInResidualDenseBlock(nn.Module):
 
 import torch.nn.functional as F
 
-class CustomUpsampleLayer(nn.Module):
-    def __init__(self, scale_factor):
-        super(CustomUpsampleLayer, self).__init__()
-        self.scale_factor = scale_factor
-
+class MultiStageUpsample(nn.Module):
+    def __init__(self, in_channels, mid_channels, out_channels):
+        super(MultiStageUpsample, self).__init__()
+        # 첫 번째 업샘플링 단계 (2배)
+        self.up1 = nn.Sequential(
+            nn.Conv2d(in_channels, mid_channels, kernel_size=3, stride=1, padding=1),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
+            nn.Conv2d(mid_channels, mid_channels, kernel_size=3, stride=1, padding=1),
+            nn.LeakyReLU(0.2, inplace=True),
+        )
+        # 두 번째 업샘플링 단계 (2.5배)
+        self.up2 = nn.Sequential(
+            nn.Conv2d(mid_channels, mid_channels, kernel_size=3, stride=1, padding=1),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Upsample(scale_factor=2.5, mode='bilinear', align_corners=False),
+            nn.Conv2d(mid_channels, out_channels, kernel_size=3, stride=1, padding=1),
+        )
+    
     def forward(self, x):
-        # Bilinear interpolation with custom scale factor
-        return F.interpolate(x, scale_factor=self.scale_factor, mode='bilinear', align_corners=False)
+        x = self.up1(x)
+        x = self.up2(x)
+        return x
 
 class GeneratorRRDB(nn.Module):
     def __init__(self, channels, filters=64, num_res_blocks=16):
@@ -74,13 +89,15 @@ class GeneratorRRDB(nn.Module):
         self.conv1 = nn.Conv2d(channels, filters, kernel_size=3, stride=1, padding=1)
 
         # Residual blocks
-        self.res_blocks = nn.Sequential(*[ResidualInResidualDenseBlock(filters) for _ in range(num_res_blocks)])
+        self.res_blocks = nn.Sequential(
+            *[ResidualInResidualDenseBlock(filters) for _ in range(num_res_blocks)]
+        )
 
         # 두 번째 Conv 레이어
         self.conv2 = nn.Conv2d(filters, filters, kernel_size=3, stride=1, padding=1)
 
-        # 5배 업샘플링 레이어
-        self.upsample = CustomUpsampleLayer(scale_factor=5)
+        # 다단계 업샘플링 레이어
+        self.upsample = MultiStageUpsample(filters, filters, filters)
 
         # 최종 출력 레이어
         self.conv3 = nn.Conv2d(filters, channels, kernel_size=3, stride=1, padding=1)
@@ -89,11 +106,10 @@ class GeneratorRRDB(nn.Module):
         out1 = self.conv1(x)
         out = self.res_blocks(out1)
         out2 = self.conv2(out)
-        out = torch.add(out1, out2)
-        out = self.upsample(out)  # 5배 업샘플링
+        out = out1 + out2  # Residual connection
+        out = self.upsample(out)
         out = self.conv3(out)
         return out
-
 
 class Discriminator(nn.Module):
     def __init__(self, input_shape):
@@ -129,4 +145,3 @@ class Discriminator(nn.Module):
 
     def forward(self, img):
         return self.model(img)
-
