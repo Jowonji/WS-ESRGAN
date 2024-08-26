@@ -13,10 +13,11 @@ from dataset import *
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from neosr.neosr.losses.wavelet_guided import WaveletGuidedLoss
 
 # 디렉토리 경로 변수로 지정
-image_dir = 'images/upsamplinglayer'
-model_dir = 'saved_models/upsamplinglayer'
+image_dir = 'images/Multi-stage-Upsampling'
+model_dir = 'saved_models/Multi-stage-Upsampling'
 lr_dir = '/home/wj/works/SR-project/WSdata/LR'
 hr_dir = '/home/wj/works/SR-project/WSdata/HR'
 
